@@ -1,0 +1,334 @@
+# ==============================================================================
+# Third Eye — Databricks Workflow Pipeline Definition
+# ==============================================================================
+# Format: Databricks Asset Bundles (DAB) YAML
+# Deploy: `databricks bundle deploy` (requires Databricks CLI ≥ 0.200)
+#
+# Pipeline schedule: hourly by default (configurable per job).
+# Task dependency graph:
+#
+#   sync_model_registry ──────┐
+#        ↓                    │
+#   lineage_walker            │
+#        ↓                    │
+#   ┌────────────────┐        │
+#   │ Parallel tasks │        │
+#   ├─ read_lakehouse_monitoring
+#   ├─ read_gateway_usage      │
+#   └─ read_guardrail_events  ─┤
+#        ↓                    │
+#   compute_health_score      │
+#        ↓                    │
+#   correlate_signals ────────┘
+#        ↓
+#   generate_root_cause  (only runs if new incidents were opened)
+#        ↓
+#   generate_model_passports (daily only)
+# ==============================================================================
+
+bundle:
+  name: third_eye
+
+variables:
+  catalog:
+    default: governance
+    description: "Unity Catalog catalog name for the model_health schema"
+  schema:
+    default: model_health
+    description: "Schema name within the catalog"
+  cluster_id:
+    default: ""
+    description: "Existing cluster ID (leave empty to use job clusters)"
+  foundation_model:
+    default: databricks-meta-llama-3-3-70b-instruct
+    description: "Foundation Model endpoint for root-cause narrative generation"
+  mock_mode:
+    default: "false"
+    description: "Set to 'true' to run in mock mode (no live Databricks dependencies)"
+  teams_webhook_secret:
+    default: "{{secrets/third_eye/teams_webhook}}"
+  slack_webhook_secret:
+    default: "{{secrets/third_eye/slack_webhook}}"
+
+resources:
+  jobs:
+
+    # --------------------------------------------------------------------------
+    # Main pipeline: hourly signal collection + scoring + correlation
+    # --------------------------------------------------------------------------
+    third_eye_pipeline:
+      name: "Third Eye — Main Pipeline"
+      description: "Hourly: discover → collect signals → score → correlate → remediate"
+      schedule:
+        quartz_cron_expression: "0 0 * * * ?"   # every hour at :00
+        timezone_id: "UTC"
+        pause_status: UNPAUSED
+
+      # Use a shared job cluster for all tasks (cost-efficient for hourly runs)
+      job_clusters:
+        - job_cluster_key: third_eye_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 2
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+            spark_env_vars:
+              THIRD_EYE_CATALOG: "{{var.catalog}}"
+              THIRD_EYE_SCHEMA: "{{var.schema}}"
+              THIRD_EYE_FOUNDATION_MODEL: "{{var.foundation_model}}"
+              THIRD_EYE_MOCK_MODE: "{{var.mock_mode}}"
+            data_security_mode: SINGLE_USER
+            runtime_engine: PHOTON
+
+      tasks:
+
+        # --------------------------------------------------------------------
+        # Task 1: Discovery & Sync
+        # --------------------------------------------------------------------
+        - task_key: sync_model_registry
+          description: "Diff MLflow + UC + Gateway AI Asset Registry against model_registry_map"
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/discovery/sync_model_registry.py
+          libraries:
+            - pypi:
+                package: databricks-sdk>=0.20.0
+            - pypi:
+                package: mlflow>=2.14.0
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+          retry_on_timeout: false
+
+        # --------------------------------------------------------------------
+        # Task 2: Lineage Walk (after registry sync)
+        # --------------------------------------------------------------------
+        - task_key: lineage_walker
+          description: "Walk system.access.table_lineage for all active models (multi-hop)"
+          depends_on:
+            - task_key: sync_model_registry
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/discovery/lineage_walker.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 900
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+        # --------------------------------------------------------------------
+        # Task 3a: Lakehouse Monitoring Adapter (parallel)
+        # --------------------------------------------------------------------
+        - task_key: read_lakehouse_monitoring
+          description: "Read Lakehouse Monitoring drift/profile tables → signal_index"
+          depends_on:
+            - task_key: lineage_walker
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/adapters/read_lakehouse_monitoring.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
+        # --------------------------------------------------------------------
+        # Task 3b: Gateway Usage Adapter (parallel)
+        # --------------------------------------------------------------------
+        - task_key: read_gateway_usage
+          description: "Read system.serving.endpoint_usage + Unified Trace Table → signal_index"
+          depends_on:
+            - task_key: lineage_walker
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/adapters/read_gateway_usage.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
+        # --------------------------------------------------------------------
+        # Task 3c: Guardrail Events Adapter (parallel)
+        # --------------------------------------------------------------------
+        - task_key: read_guardrail_events
+          description: "Read Unity Gateway AI Guardrail violations → signal_index"
+          depends_on:
+            - task_key: lineage_walker
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/adapters/read_guardrail_events.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 2
+          min_retry_interval_millis: 60000
+
+        # --------------------------------------------------------------------
+        # Task 4: Compute Health Scores (after all adapters)
+        # --------------------------------------------------------------------
+        - task_key: compute_health_score
+          description: "Compute composite health score + confidence per model → risk_scores"
+          depends_on:
+            - task_key: read_lakehouse_monitoring
+            - task_key: read_gateway_usage
+            - task_key: read_guardrail_events
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/scoring/compute_health_score.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+        # --------------------------------------------------------------------
+        # Task 5: Correlate Signals & Open Incidents
+        # --------------------------------------------------------------------
+        - task_key: correlate_signals
+          description: "Time-window signal correlation → open incidents where qualified"
+          depends_on:
+            - task_key: compute_health_score
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/scoring/correlate_signals.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+        # --------------------------------------------------------------------
+        # Task 6: Root Cause Narrative (only if incidents opened)
+        # --------------------------------------------------------------------
+        - task_key: generate_root_cause
+          description: "ai_query() → root cause + remediation suggestions for new incidents"
+          depends_on:
+            - task_key: correlate_signals
+          job_cluster_key: third_eye_cluster
+          python_file:
+            path: /Workspace/third_eye/remediation/generate_root_cause.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 900
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          # Conditional: only runs if correlate_signals task succeeded AND new incidents exist
+          run_if: ALL_SUCCESS
+
+    # --------------------------------------------------------------------------
+    # Daily passport generation job (separate schedule: 06:00 UTC)
+    # --------------------------------------------------------------------------
+    third_eye_passport:
+      name: "Third Eye — Daily Model Passports"
+      description: "Generates per-model health passports daily for all active models"
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"   # daily at 06:00 UTC
+        timezone_id: "UTC"
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: passport_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 1
+            spark_env_vars:
+              THIRD_EYE_CATALOG: "{{var.catalog}}"
+              THIRD_EYE_SCHEMA: "{{var.schema}}"
+              THIRD_EYE_MOCK_MODE: "{{var.mock_mode}}"
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: generate_passports
+          description: "Generate model passports for all active models"
+          job_cluster_key: passport_cluster
+          python_file:
+            path: /Workspace/third_eye/passport/generate_model_passport.py
+          libraries:
+            - pypi:
+                package: pyyaml>=6.0
+          timeout_seconds: 1800
+          max_retries: 1
+
+    # --------------------------------------------------------------------------
+    # [V2] Auto-retrain pipeline (manual trigger or threshold-triggered)
+    # --------------------------------------------------------------------------
+    third_eye_auto_retrain:
+      name: "[V2] Third Eye — Auto Retrain Pipeline"
+      description: "[V2] Champion/challenger retrain triggered by sustained critical health"
+      schedule:
+        pause_status: PAUSED   # V2 — paused until enabled
+
+      job_clusters:
+        - job_cluster_key: retrain_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS4_v2
+            num_workers: 4
+            spark_env_vars:
+              THIRD_EYE_CATALOG: "{{var.catalog}}"
+              THIRD_EYE_SCHEMA: "{{var.schema}}"
+              THIRD_EYE_MOCK_MODE: "{{var.mock_mode}}"
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: auto_retrain
+          description: "[V2] Trigger retraining for critical-health models"
+          job_cluster_key: retrain_cluster
+          python_file:
+            path: /Workspace/third_eye/v2_stretch/auto_retrain/auto_retrain_pipeline.py
+          timeout_seconds: 7200
+          max_retries: 0
+
+        - task_key: champion_challenger_eval
+          description: "[V2] Evaluate challenger vs. champion on holdout window"
+          depends_on:
+            - task_key: auto_retrain
+          job_cluster_key: retrain_cluster
+          python_file:
+            path: /Workspace/third_eye/v2_stretch/auto_retrain/auto_retrain_pipeline.py
+          parameters:
+            - "--mode=evaluate"
+          timeout_seconds: 3600
+          max_retries: 0
+
+    # --------------------------------------------------------------------------
+    # [V2] Blast Radius Analysis (event-triggered)
+    # --------------------------------------------------------------------------
+    third_eye_blast_radius:
+      name: "[V2] Third Eye — Blast Radius Analysis"
+      description: "[V2] Compute blast radius for upstream table changes"
+      schedule:
+        pause_status: PAUSED   # V2 — paused until enabled
+
+      job_clusters:
+        - job_cluster_key: blast_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 2
+            spark_env_vars:
+              THIRD_EYE_CATALOG: "{{var.catalog}}"
+              THIRD_EYE_SCHEMA: "{{var.schema}}"
+              THIRD_EYE_MOCK_MODE: "{{var.mock_mode}}"
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: blast_radius_analysis
+          description: "[V2] Walk multi-hop lineage for affected models and dashboards"
+          job_cluster_key: blast_cluster
+          python_file:
+            path: /Workspace/third_eye/v2_stretch/blast_radius/blast_radius_analyzer.py
+          timeout_seconds: 1800
+          max_retries: 1

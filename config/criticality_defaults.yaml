@@ -1,0 +1,210 @@
+# Third Eye — Criticality Tier Defaults
+# =====================================================================
+# Maps model attributes (business domain, UC tags, endpoint/model name
+# prefixes) to a default criticality tier.
+#
+# The discovery/sync job (discovery/sync_model_registry.py) applies
+# these rules when a model has no explicit criticality_tier tag in UC.
+#
+# Rules are evaluated in ascending priority order (lower number = higher
+# priority). The first matching rule wins.
+#
+# Tier definitions:
+#   tier_1_business    — Revenue-generating, customer-facing, or regulated
+#   tier_2_operational — Important operational models; no direct revenue impact
+#   tier_3_low         — Internal tools, analytics helpers, low-stakes
+#   tier_0_experimental — Experiments, staging, sandbox models
+# =====================================================================
+
+rules:
+
+  # -----------------------------------------------------------------------
+  # Priority 5 — Override rules (highest priority)
+  # -----------------------------------------------------------------------
+  - rule_id: "override_pii_tag"
+    priority: 5
+    match_type: "tag_key"
+    match_value: "pii"
+    assigned_tier: "tier_1_business"
+    description: "Any model tagged with 'pii' key (value irrelevant) → business-critical. PII handling demands strictest monitoring."
+
+  - rule_id: "override_phi_tag"
+    priority: 5
+    match_type: "tag_key"
+    match_value: "phi"
+    assigned_tier: "tier_1_business"
+    description: "PHI data → HIPAA-relevant → always Tier 1."
+
+  - rule_id: "override_compliance_tag"
+    priority: 5
+    match_type: "tag_value"
+    match_key: "compliance"
+    match_value: "sox"
+    assigned_tier: "tier_1_business"
+    description: "SOX-compliance-tagged models → Tier 1."
+
+  # -----------------------------------------------------------------------
+  # Priority 10 — Business domain rules
+  # -----------------------------------------------------------------------
+  - rule_id: "domain_finance"
+    priority: 10
+    match_type: "domain"
+    match_value: "finance"
+    assigned_tier: "tier_1_business"
+    description: "Finance domain → business-critical."
+
+  - rule_id: "domain_regulatory"
+    priority: 10
+    match_type: "domain"
+    match_value: "regulatory"
+    assigned_tier: "tier_1_business"
+    description: "Regulatory → business-critical."
+
+  - rule_id: "domain_risk"
+    priority: 10
+    match_type: "domain"
+    match_value: "risk"
+    assigned_tier: "tier_1_business"
+    description: "Risk/fraud detection → business-critical."
+
+  - rule_id: "domain_fraud"
+    priority: 10
+    match_type: "domain"
+    match_value: "fraud"
+    assigned_tier: "tier_1_business"
+    description: "Fraud detection → business-critical."
+
+  - rule_id: "domain_customer"
+    priority: 10
+    match_type: "domain"
+    match_value: "customer"
+    assigned_tier: "tier_1_business"
+    description: "Customer-facing → business-critical."
+
+  - rule_id: "domain_operations"
+    priority: 20
+    match_type: "domain"
+    match_value: "operations"
+    assigned_tier: "tier_2_operational"
+    description: "Ops domain → operational tier."
+
+  - rule_id: "domain_supply_chain"
+    priority: 20
+    match_type: "domain"
+    match_value: "supply_chain"
+    assigned_tier: "tier_2_operational"
+    description: "Supply chain → operational tier."
+
+  - rule_id: "domain_hr"
+    priority: 20
+    match_type: "domain"
+    match_value: "hr"
+    assigned_tier: "tier_3_low"
+    description: "HR analytics → low-priority."
+
+  - rule_id: "domain_internal_analytics"
+    priority: 20
+    match_type: "domain"
+    match_value: "internal_analytics"
+    assigned_tier: "tier_3_low"
+    description: "Internal analytics → low-priority."
+
+  # -----------------------------------------------------------------------
+  # Priority 15 — Endpoint name prefix rules
+  # -----------------------------------------------------------------------
+  - rule_id: "endpoint_prod"
+    priority: 15
+    match_type: "serving_endpoint_prefix"
+    match_value: "prod-"
+    assigned_tier: "tier_1_business"
+    description: "prod- endpoint prefix → always business-critical regardless of domain."
+
+  - rule_id: "endpoint_staging"
+    priority: 15
+    match_type: "serving_endpoint_prefix"
+    match_value: "staging-"
+    assigned_tier: "tier_2_operational"
+    description: "staging- endpoint → operational."
+
+  - rule_id: "endpoint_dev"
+    priority: 15
+    match_type: "serving_endpoint_prefix"
+    match_value: "dev-"
+    assigned_tier: "tier_0_experimental"
+    description: "dev- endpoint → experimental."
+
+  # -----------------------------------------------------------------------
+  # Priority 50 — Model name prefix rules
+  # -----------------------------------------------------------------------
+  - rule_id: "model_exp_prefix"
+    priority: 50
+    match_type: "model_name_prefix"
+    match_value: "exp_"
+    assigned_tier: "tier_0_experimental"
+    description: "exp_ prefix in model name → experimental tier."
+
+  - rule_id: "model_test_prefix"
+    priority: 50
+    match_type: "model_name_prefix"
+    match_value: "test_"
+    assigned_tier: "tier_0_experimental"
+    description: "test_ prefix → experimental."
+
+  - rule_id: "model_sandbox_prefix"
+    priority: 50
+    match_type: "model_name_prefix"
+    match_value: "sandbox_"
+    assigned_tier: "tier_0_experimental"
+    description: "sandbox_ prefix → experimental."
+
+  # -----------------------------------------------------------------------
+  # Priority 99 — Fallback (lowest priority, always matches)
+  # -----------------------------------------------------------------------
+  - rule_id: "default_fallback"
+    priority: 99
+    match_type: "default"
+    match_value: "*"
+    assigned_tier: "tier_2_operational"
+    description: "No other rule matched → default to operational tier."
+
+# =====================================================================
+# Autonomy level defaults per tier (V2)
+# =====================================================================
+autonomy_defaults:
+  description: |
+    Default autonomy level assigned to new models by tier.
+    Level 1 = notify only (V1 behavior for all)
+    Level 2 = auto-open retrain candidate (V2)
+    Level 3 = auto-champion evaluation (V2)
+    Level 4 = auto-promote non-Tier-1 models (V2)
+    Level 5 = fully autonomous (V2, not recommended for any production tier)
+
+  tier_0_experimental:  1   # notify only
+  tier_1_business:      1   # notify only — human approval required for Tier 1
+  tier_2_operational:   1   # V1 default; can promote to 2 in V2
+  tier_3_low:           1   # notify only in V1
+
+# =====================================================================
+# Tier display metadata (for dashboard/UI rendering)
+# =====================================================================
+tier_display:
+  tier_0_experimental:
+    label: "Experimental"
+    color: "#6C757D"   # gray
+    badge_color: "gray"
+    icon: "flask"
+  tier_1_business:
+    label: "Business Critical"
+    color: "#DC3545"   # red
+    badge_color: "red"
+    icon: "shield-exclamation"
+  tier_2_operational:
+    label: "Operational"
+    color: "#FD7E14"   # orange
+    badge_color: "orange"
+    icon: "gear"
+  tier_3_low:
+    label: "Low Priority"
+    color: "#20C997"   # teal
+    badge_color: "teal"
+    icon: "arrow-down-circle"

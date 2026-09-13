@@ -1,0 +1,149 @@
+# Third Eye — Risk Weight Configuration
+# =====================================================================
+# These weights drive the composite health score formula:
+#
+#   health_score = 100 - (
+#       w1_drift    * drift_component    +
+#       w2_quality  * (1 - quality_component) +
+#       w3_cost     * cost_component     +
+#       w4_guardrail * guardrail_component
+#   ) * criticality_weight
+#
+# Weights must sum ≤ 1.0 per tier (the formula normalizes internally).
+# criticality_weight is a multiplier (0–2) applied to the weighted sum.
+#
+# NOTE: These YAML values are the source of truth for development/testing.
+#       In production, the scoring engine reads from the
+#       governance.model_health.risk_weights_config Delta table (which is
+#       seeded from these defaults via 01_create_catalog_schema.sql).
+# =====================================================================
+
+tiers:
+
+  tier_0_experimental:
+    description: "Experimental / sandbox models — lowest impact. Looser thresholds."
+    w1_drift:         0.20   # drift has moderate influence in experimental stage
+    w2_quality:       0.20   # quality matters but models are expected to iterate
+    w3_cost:          0.10   # cost less critical for experiments
+    w4_guardrail:     0.10   # guardrail violations noted but not critical
+    criticality_weight: 0.50 # halved — a large drift here ranks below small drift on Tier 1
+    correlation_window_hours: 4
+    incident_min_signals: 1  # single signal can open an incident (lower bar, just for visibility)
+    health_tier_thresholds:
+      healthy:  80
+      watch:    60
+      at_risk:  40
+      critical:  0
+
+  tier_1_business:
+    description: "Business-critical / regulatory-facing models — strictest weights."
+    w1_drift:         0.35   # drift is a leading indicator of failure — highest weight
+    w2_quality:       0.35   # accuracy is core value delivery
+    w3_cost:          0.15   # cost anomalies can signal abuse or runaway usage
+    w4_guardrail:     0.15   # guardrail violations are serious for regulated domains
+    criticality_weight: 1.50 # 1.5× multiplier — same signal, worse score
+    correlation_window_hours: 2   # tighter correlation window = faster incident opening
+    incident_min_signals: 2       # require at least two signal types to open an incident
+    health_tier_thresholds:
+      healthy:  80
+      watch:    65   # tighter — degradation caught earlier
+      at_risk:  45
+      critical:  0
+
+  tier_2_operational:
+    description: "Core operational models — balanced weights."
+    w1_drift:         0.30
+    w2_quality:       0.30
+    w3_cost:          0.20
+    w4_guardrail:     0.20
+    criticality_weight: 1.00
+    correlation_window_hours: 2
+    incident_min_signals: 2
+    health_tier_thresholds:
+      healthy:  80
+      watch:    60
+      at_risk:  40
+      critical:  0
+
+  tier_3_low:
+    description: "Low-priority / background models — relaxed weights."
+    w1_drift:         0.25
+    w2_quality:       0.25
+    w3_cost:          0.25
+    w4_guardrail:     0.25
+    criticality_weight: 0.75
+    correlation_window_hours: 6
+    incident_min_signals: 2
+    health_tier_thresholds:
+      healthy:  80
+      watch:    60
+      at_risk:  40
+      critical:  0
+
+# =====================================================================
+# Component normalization rules
+# How raw Databricks metrics are normalized to 0-1 before applying weights
+# =====================================================================
+normalization:
+
+  drift:
+    method: "clamp_and_scale"
+    description: "Lakehouse Monitoring drift score (consecutive drift metric) clamped to [0, 1]"
+    raw_source: "{monitor_schema}.{table}_drift_metrics"
+    raw_column: "drift_score"  # column name in the native drift metrics table
+    min_raw: 0.0
+    max_raw: 1.0               # PSI/KS values above 1 are clamped to 1
+
+  accuracy:
+    method: "direct"
+    description: "Accuracy metric from InferenceLog analysis — already 0–1. Higher is better."
+    raw_source: "{monitor_schema}.{table}_profile_metrics"
+    raw_column: "accuracy_score"
+    interpretation: "1.0 = perfect, 0.0 = random. Used as quality_component directly."
+
+  cost:
+    method: "z_score_cap"
+    description: "Cost anomaly: z-score of endpoint cost vs. 14-day rolling baseline, capped at 3σ"
+    raw_source: "system.serving.endpoint_usage"
+    raw_column: "total_token_cost"
+    rolling_window_days: 14
+    z_score_cap: 3.0  # z ≥ 3 → normalized value = 1.0
+
+  guardrail:
+    method: "rate_per_1000"
+    description: "Guardrail violations per 1000 requests. Rate ≥ 50/1000 → normalized = 1.0"
+    raw_source: "unity_gateway.guardrail_events"  # Unity Gateway guardrail violation events
+    violation_rate_cap: 50  # per 1000 requests
+
+  latency:
+    method: "percentile_breach_rate"
+    description: "Fraction of requests exceeding p99 latency threshold"
+    raw_source: "{unified_trace_table}"
+    p99_threshold_ms: 5000   # configurable per endpoint
+
+# =====================================================================
+# Confidence scoring parameters
+# =====================================================================
+confidence:
+  description: |
+    Confidence is 0–1. A low confidence means the health score should be
+    interpreted with caution (e.g., not enough data to be certain).
+    Formula: confidence = f(ground_truth, baseline_window, traffic_volume, signal_count)
+
+  ground_truth_available:
+    weight: 0.35
+    full_credit_if: "ground_truth joined in InferenceLog monitor"
+
+  baseline_window_completeness:
+    weight: 0.25
+    full_credit_days: 14   # 14 days of baseline = full credit
+    min_days: 1
+
+  traffic_volume:
+    weight: 0.25
+    full_credit_requests_per_day: 1000
+    min_requests_per_day: 10
+
+  signal_count:
+    weight: 0.15
+    full_credit_signal_count: 4  # all 4 signal types present = full credit

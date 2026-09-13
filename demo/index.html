@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Third Eye — AI Health & ModelOps Control Plane for Databricks</title>
+  <meta name="description" content="The Third Eye: a continuous AI health & governed ModelOps control plane for Databricks. Watch. Understand. Act.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ── Toast container ───────────────────────── -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ── Drawer overlay ────────────────────────── -->
+<div class="drawer-overlay" id="drawer-overlay"></div>
+
+<!-- ── Model Detail Drawer ───────────────────── -->
+<aside class="model-drawer" id="model-drawer" role="dialog" aria-modal="true" aria-label="Model Detail">
+  <div class="drawer-header">
+    <div>
+      <div style="font-size:15px;font-weight:700" id="drawer-model-name">—</div>
+      <div style="font-size:12px;color:var(--text-muted)" id="drawer-model-endpoint">—</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <span id="drawer-tier-badge" class="tier-badge">—</span>
+        <span id="drawer-model-version" style="font-size:12px;color:var(--text-muted)"></span>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+      <div style="font-size:30px;font-weight:800;line-height:1" id="drawer-health-score">—</div>
+      <div style="font-size:12px;font-weight:600" id="drawer-health-tier">—</div>
+    </div>
+    <button class="drawer-close" id="drawer-close-btn" aria-label="Close">✕</button>
+  </div>
+  <div class="drawer-body">
+
+    <!-- Confidence -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Evidence Confidence</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1">
+          <div class="confidence-bar">
+            <div class="confidence-fill" id="drawer-confidence-fill" style="width:0%"></div>
+          </div>
+        </div>
+        <span style="font-size:13px;font-weight:700;color:var(--accent-blue)" id="drawer-confidence">—</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">How much to trust the health score given evidence completeness.</div>
+    </div>
+
+    <!-- Component breakdown -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Health Score Components</div>
+      <div class="component-breakdown">
+        <div class="component-card">
+          <div class="component-label">🌊 Data Drift</div>
+          <div class="component-value" id="drawer-drift">—</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">0% = no drift, 100% = maximum drift</div>
+        </div>
+        <div class="component-card">
+          <div class="component-label">🎯 Quality/Accuracy</div>
+          <div class="component-value" id="drawer-quality">—</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">Accuracy from Lakehouse Monitoring</div>
+        </div>
+        <div class="component-card">
+          <div class="component-label">💰 Cost Anomaly</div>
+          <div class="component-value" id="drawer-cost">—</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">Z-score vs 14-day rolling baseline</div>
+        </div>
+        <div class="component-card">
+          <div class="component-label">🛡️ Guardrail Violations</div>
+          <div class="component-value" id="drawer-guardrail">—</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">Violations per 1,000 requests</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Incidents -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Active Incidents</div>
+      <div id="drawer-incidents"></div>
+    </div>
+
+    <!-- Lineage -->
+    <div class="drawer-section">
+      <div class="drawer-section-title">Upstream Lineage Events</div>
+      <div class="lineage-list" id="drawer-lineage"></div>
+    </div>
+
+  </div>
+</aside>
+
+<!-- ═══════════════════════════════════════════
+     MAIN LAYOUT
+     ═══════════════════════════════════════════ -->
+<div class="layout">
+
+  <!-- ── Sidebar ─────────────────────────────── -->
+  <aside class="sidebar" role="navigation" aria-label="Main navigation">
+    <div class="sidebar-logo">
+      <div class="logo-icon">🧿</div>
+      <div class="logo-text">
+        <span class="logo-title">Third Eye</span>
+        <span class="logo-sub">ModelOps Control Plane</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Monitor</div>
+      <div class="nav-item active" data-section="fleet">
+        <span class="nav-icon">🏠</span>
+        Fleet Overview
+      </div>
+      <div class="nav-item" data-section="leaderboard">
+        <span class="nav-icon">📊</span>
+        Model Leaderboard
+      </div>
+      <div class="nav-item" data-section="incidents">
+        <span class="nav-icon">🚨</span>
+        Incidents
+        <span class="nav-badge">3</span>
+      </div>
+      <div class="nav-item" data-section="passport">
+        <span class="nav-icon">📋</span>
+        Model Passports
+      </div>
+
+      <div class="nav-section-label" style="margin-top:8px">Investigate</div>
+      <div class="nav-item" data-section="genie">
+        <span class="nav-icon">🧿</span>
+        Genie Space
+      </div>
+
+      <div class="nav-section-label" style="margin-top:8px">Operate</div>
+      <div class="nav-item" data-section="pipeline">
+        <span class="nav-icon">⚙️</span>
+        Pipeline
+      </div>
+      <div class="nav-item" data-section="v2">
+        <span class="nav-icon">🚀</span>
+        V2 Capabilities
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="workspace-badge">
+        <div class="ws-dot"></div>
+        <div>
+          <div class="ws-label">Workspace</div>
+          <div class="ws-name">adb-demo.azuredatabricks.net</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main Content ────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-title" id="topbar-title">Fleet Health Overview</div>
+      <div id="pipeline-running-bar" class="pipeline-running-bar"></div>
+      <div class="topbar-meta">
+        <span class="live-dot"></span>
+        Live · Last scored <span id="last-run-time">8m ago</span>
+      </div>
+      <button class="run-pipeline-btn" id="run-pipeline-btn">
+        ▶ Run Pipeline
+      </button>
+    </header>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Fleet Overview
+         ══════════════════════════════════════ -->
+    <section class="page-section active" id="section-fleet">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Fleet Health Overview</div>
+          <div class="section-subtitle">12 models monitored across 4 business domains</div>
+        </div>
+      </div>
+
+      <!-- KPI Tiles -->
+      <div class="kpi-grid">
+        <div class="kpi-card healthy">
+          <div class="kpi-label">Healthy Models</div>
+          <div class="kpi-value" id="kpi-healthy">—</div>
+          <div class="kpi-pct" id="kpi-pct-healthy">—</div>
+          <span class="kpi-icon">✅</span>
+        </div>
+        <div class="kpi-card watch">
+          <div class="kpi-label">Under Watch</div>
+          <div class="kpi-value" id="kpi-watch">—</div>
+          <div class="kpi-pct" id="kpi-pct-watch">—</div>
+          <span class="kpi-icon">👀</span>
+        </div>
+        <div class="kpi-card at-risk">
+          <div class="kpi-label">At Risk</div>
+          <div class="kpi-value" id="kpi-at-risk">—</div>
+          <div class="kpi-pct" id="kpi-pct-at-risk">—</div>
+          <span class="kpi-icon">⚠️</span>
+        </div>
+        <div class="kpi-card critical">
+          <div class="kpi-label">Critical</div>
+          <div class="kpi-value" id="kpi-critical">—</div>
+          <div class="kpi-pct" id="kpi-pct-critical">—</div>
+          <span class="kpi-icon">🚨</span>
+        </div>
+        <div class="kpi-card brand">
+          <div class="kpi-label">Avg Health Score</div>
+          <div class="kpi-value" id="kpi-avg-score">—</div>
+          <div class="kpi-pct">out of 100</div>
+          <span class="kpi-icon">💯</span>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-label">Open Incidents</div>
+          <div class="kpi-value" id="kpi-incidents">—</div>
+          <div class="kpi-pct">requiring attention</div>
+          <span class="kpi-icon">📋</span>
+        </div>
+        <div class="kpi-card brand">
+          <div class="kpi-label">Tier Changes (24h)</div>
+          <div class="kpi-value" id="kpi-changes">—</div>
+          <div class="kpi-pct">models degraded/improved</div>
+          <span class="kpi-icon">📈</span>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-label">Total Models</div>
+          <div class="kpi-value" id="kpi-total">—</div>
+          <div class="kpi-pct">in asset inventory</div>
+          <span class="kpi-icon">🗂️</span>
+        </div>
+      </div>
+
+      <!-- Fleet donut + top worst models -->
+      <div class="two-col">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Health Distribution</span>
+          </div>
+          <div style="padding:20px;display:flex;align-items:center;gap:24px">
+            <canvas id="health-donut" width="160" height="160" style="flex-shrink:0"></canvas>
+            <div style="display:flex;flex-direction:column;gap:10px;flex:1">
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+                <span style="width:10px;height:10px;border-radius:50%;background:#10b981;flex-shrink:0"></span>
+                <span style="flex:1">Healthy</span>
+                <strong id="fleet-leg-healthy">—</strong>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+                <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>
+                <span style="flex:1">Watch</span>
+                <strong id="fleet-leg-watch">—</strong>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+                <span style="width:10px;height:10px;border-radius:50%;background:#f97316;flex-shrink:0"></span>
+                <span style="flex:1">At Risk</span>
+                <strong id="fleet-leg-at-risk">—</strong>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+                <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;flex-shrink:0"></span>
+                <span style="flex:1">Critical</span>
+                <strong id="fleet-leg-critical">—</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🚨 Models Needing Attention (worst first)</span>
+            <button class="card-action" onclick="navigate('leaderboard')">View all →</button>
+          </div>
+          <div class="table-wrapper">
+            <table class="model-table">
+              <thead>
+                <tr>
+                  <th>Model</th><th>Tier</th><th>Score</th><th>Health</th><th>Incidents</th>
+                </tr>
+              </thead>
+              <tbody id="overview-model-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Architecture diagram card -->
+      <div class="card mb-14">
+        <div class="card-header">
+          <span class="card-title">⚙️ How Third Eye Works — Data Flow</span>
+        </div>
+        <div style="padding:20px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-secondary);line-height:1.8;overflow-x:auto;background:var(--bg-glass)">
+<pre style="margin:0;color:var(--text-secondary)">
+┌─────────────── DATABRICKS NATIVE (read-only) ───────────────────┐
+│ Lakehouse Monitoring · system.access.table_lineage              │
+│ Unity Gateway (Guardrails, Usage, Trace) · MLflow Registry       │
+└────────────────────────┬────────────────────────────────────────┘
+                         │  read-only adapters
+                         ▼
+         ┌─────────────────────────────────┐
+         │   DISCOVERY & SYNC JOB          │
+         │  MLflow/UC/Gateway diff →        │
+         │  model_registry_map             │
+         └──────────────┬──────────────────┘
+                         ▼
+         ┌─────────────────────────────────┐
+         │   SIGNAL NORMALIZATION LAYER    │
+         │  drift · accuracy · cost ·      │
+         │  guardrail · latency            │
+         └──────────────┬──────────────────┘
+                         ▼
+         ┌─────────────────────────────────┐
+         │  CORRELATION & SCORING ENGINE   │  ← the actual new engineering
+         │  time-window correlation        │
+         │  composite health + confidence  │
+         │  criticality weighting          │
+         └──────────────┬──────────────────┘
+                         ▼
+               governance.model_health.*
+                         │
+         ┌───────────────┼───────────────────┐
+         ▼               ▼                   ▼
+   AI/BI DASHBOARD   GENIE SPACE     COPILOT STUDIO
+   (this demo)      (ask anything)  (Teams/Slack/GChat)
+</pre>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Model Leaderboard
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-leaderboard">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Model Leaderboard</div>
+          <div class="section-subtitle">Click any row to inspect the model detail. Sorted worst-first by default.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="tier-filter-btn acknowledge-btn active" data-tier="all">All Tiers</button>
+          <button class="tier-filter-btn acknowledge-btn" data-tier="tier_1_business" style="color:#f87171">🔴 Tier 1</button>
+          <button class="tier-filter-btn acknowledge-btn" data-tier="tier_2_operational" style="color:#fb923c">🟠 Tier 2</button>
+          <button class="tier-filter-btn acknowledge-btn" data-tier="tier_3_low" style="color:#34d399">🟢 Tier 3</button>
+          <button class="tier-filter-btn acknowledge-btn" data-tier="tier_0_experimental" style="color:#9ca3af">🧪 Exp</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrapper">
+          <table class="model-table" id="leaderboard-table">
+            <thead>
+              <tr>
+                <th data-sort="model_name">Model</th>
+                <th>Type</th>
+                <th data-sort="criticality_tier">Tier</th>
+                <th data-sort="health_score">Health Score ↑</th>
+                <th data-sort="health_tier">Status</th>
+                <th>Trend</th>
+                <th data-sort="open_incidents">Incidents</th>
+                <th>Domain</th>
+                <th>Last Scored</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Incidents
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-incidents">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Active Incidents</div>
+          <div class="section-subtitle">Correlated evidence bundles — opened only when multiple signal types co-occur (anti-alert-fatigue).</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="health-badge critical">🚨 3 Open</span>
+        </div>
+      </div>
+      <div class="incidents-list" id="incidents-list"></div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Model Passports
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-passport">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Model Passports</div>
+          <div class="section-subtitle">Auto-generated per-model health summaries from the governed schema — no raw data access needed.</div>
+        </div>
+      </div>
+      <div id="passport-container"></div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Pipeline
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-pipeline">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Pipeline Execution Log</div>
+          <div class="section-subtitle">Last run: 8m ago · Total duration: 4m 23s · Status: All tasks succeeded</div>
+        </div>
+        <button class="run-pipeline-btn" onclick="runPipelineDemo()" style="font-size:12px;padding:6px 14px">
+          ▶ Re-run Now
+        </button>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Task Execution Flow</span></div>
+          <div style="padding:16px">
+            <div class="pipeline-flow" id="pipeline-tasks"></div>
+          </div>
+        </div>
+
+        <div class="gap-y">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Run Summary</span></div>
+            <div style="padding:16px;display:flex;flex-direction:column;gap:10px">
+              ${[
+                ['Models discovered', '12'],
+                ['New lineage events', '6'],
+                ['Signals emitted', '42'],
+                ['Models scored', '12'],
+                ['Incidents opened', '3'],
+                ['Narratives generated', '3'],
+              ].map(([k,v]) => `
+                <div style="display:flex;justify-content:space-between;font-size:13px">
+                  <span style="color:var(--text-muted)">${k}</span>
+                  <strong style="color:var(--text-primary)">${v}</strong>
+                </div>`).join('')}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span class="card-title">Workflow Schedule</span></div>
+            <div style="padding:16px;font-size:12px;color:var(--text-secondary)">
+              <div style="margin-bottom:8px"><strong style="color:var(--text-primary)">Main Pipeline</strong> — Every hour at :00</div>
+              <div style="margin-bottom:8px"><strong style="color:var(--text-primary)">Passport Generator</strong> — Daily at 06:00 UTC</div>
+              <div style="margin-bottom:8px"><strong style="color:var(--text-muted)">[V2] Auto-Retrain</strong> — Paused (threshold-triggered)</div>
+              <div><strong style="color:var(--text-muted)">[V2] Blast Radius</strong> — Paused (event-triggered)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: Genie Space
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-genie">
+      <div class="section-header">
+        <div>
+          <div class="section-title">🧿 Genie Investigation Space</div>
+          <div class="section-subtitle">Ask anything about your AI fleet in plain English.</div>
+        </div>
+      </div>
+
+      <div class="card" style="height:calc(100vh - 200px)">
+        <div class="genie-container">
+          <div class="genie-chips">
+            <button class="genie-chip">Which models are at risk?</button>
+            <button class="genie-chip">Why is credit_risk at risk?</button>
+            <button class="genie-chip">Show me fleet health</button>
+            <button class="genie-chip">What are open incidents?</button>
+            <button class="genie-chip">Which model costs the most?</button>
+          </div>
+
+          <div class="genie-messages" id="genie-messages">
+            <div class="genie-message assistant">
+              <div class="genie-avatar">🧿</div>
+              <div class="genie-bubble">
+                <strong>Third Eye Genie is ready.</strong><br><br>
+                I can answer questions about your 12 monitored models, 3 open incidents, cost anomalies, drift signals, and lineage changes — all powered by <code>governance.model_health.*</code>.<br><br>
+                Try: <em>"Which models are at risk?"</em> or <em>"Why is credit_risk at risk?"</em>
+              </div>
+            </div>
+          </div>
+
+          <div class="genie-input-bar">
+            <input class="genie-input" id="genie-input" placeholder="Ask about your AI fleet..." autocomplete="off">
+            <button class="genie-send-btn" id="genie-send" aria-label="Send">➤</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         SECTION: V2 Capabilities
+         ══════════════════════════════════════ -->
+    <section class="page-section" id="section-v2">
+      <div class="section-header">
+        <div>
+          <div class="section-title">V2 Capabilities</div>
+          <div class="section-subtitle">Built — schema designed from day one to support governed autonomy without replacing V1.</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="margin-bottom:24px">
+        ${[
+          { icon:'🔄', title:'Auto-Retraining', desc:'Sustained critical health triggers champion/challenger retraining. Never auto-promotes Tier 1 models.', status:'ready', color:'brand' },
+          { icon:'💥', title:'Blast Radius Analysis', desc:'Walk multi-hop lineage to find which models/dashboards are downstream of an upstream change.', status:'ready', color:'blue' },
+          { icon:'🔍', title:'Silent Failure Detection', desc:'Aggregate health looks fine but a population slice has collapsed. Powered by Lakehouse Monitoring fairness metrics.', status:'ready', color:'watch' },
+          { icon:'🌐', title:'Multi-Workspace Federation', desc:'Aggregate risk scores across workspaces with workspace_id tagging and UC row-level security.', status:'ready', color:'healthy' },
+          { icon:'📊', title:'Cost-of-Drift Estimation', desc:'Translate health_score degradation into estimated dollar exposure for leadership framing.', status:'planned', color:'brand' },
+          { icon:'📦', title:'Databricks App Packaging', desc:'Installable app with setup wizard, usage-based pricing mirroring Databricks consumption model.', status:'planned', color:'blue' },
+        ].map(cap => `
+          <div class="kpi-card ${cap.color}">
+            <div class="kpi-icon">${cap.icon}</div>
+            <div class="kpi-label" style="margin-bottom:6px">${cap.title}</div>
+            <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${cap.desc}</div>
+            <div style="margin-top:10px">
+              <span class="health-badge ${cap.status === 'ready' ? 'healthy' : 'watch'}" style="font-size:11px">
+                ${cap.status === 'ready' ? '✅ Built & ready' : '📅 Planned'}
+              </span>
+            </div>
+          </div>`).join('')}
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">V2 Schema Design (V1-compatible)</span></div>
+        <div style="padding:20px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-secondary);overflow-x:auto">
+<pre style="margin:0">governance.model_health (V1 + V2 tables)
+├── model_registry_map       ← V1 + V2 fields (autonomy_level, retrain_trigger_threshold)
+├── signal_index             ← V1 (unchanged)
+├── lineage_events           ← V1 (unchanged)
+├── risk_scores              ← V1 (unchanged)
+├── incidents                ← V1 + V2 fields (auto_action_taken, approval_required)
+├── remediation_suggestions  ← V1 + V2 fields (blast_radius_summary, cost_impact_estimate)
+├── model_passport           ← V1 (unchanged)
+├── blast_radius_analysis    ← V2 NEW
+└── retrain_candidates       ← V2 NEW</pre>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="data/synthetic_data.js"></script>
+<script src="app.js"></script>
+<script>
+  // Populate fleet legend after DOM ready
+  document.addEventListener('DOMContentLoaded', () => {
+    const f = DEMO_DATA.fleet;
+    const legMap = {
+      'fleet-leg-healthy': f.healthy_count,
+      'fleet-leg-watch':   f.watch_count,
+      'fleet-leg-at-risk': f.at_risk_count,
+      'fleet-leg-critical':f.critical_count,
+    };
+    Object.entries(legMap).forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = `${val} models`;
+    });
+  });
+</script>
+</body>
+</html>
