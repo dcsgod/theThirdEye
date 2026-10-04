@@ -8,8 +8,20 @@
 
 [![CI](https://github.com/dcsgod/theThirdEye/actions/workflows/ci.yml/badge.svg)](https://github.com/dcsgod/theThirdEye/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/the-third-eye?style=for-the-badge&color=4267E8)](https://pypi.org/project/the-third-eye/)
-[![Python](https://img.shields.io/pypi/pyversions/third-eye?style=for-the-badge)](https://pypi.org/project/third-eye/)
+[![Python](https://img.shields.io/pypi/pyversions/the-third-eye?style=for-the-badge)](https://pypi.org/project/the-third-eye/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-4267E8?style=for-the-badge)](https://www.apache.org/licenses/LICENSE-2.0)
+
+---
+
+## Release
+
+The current PyPI distribution is `the-third-eye`.
+
+```bash
+pip install the-third-eye
+```
+
+The Python import namespace is `third_eye`.
 
 ---
 
