@@ -1,6 +1,8 @@
 # The Third Eye
 
-### AI model health and governance control plane for Databricks
+### Databricks AI model monitoring, model health & AI governance control plane
+
+**The Third Eye** is an open-source **Databricks-native AI observability and model governance platform** for monitoring model health, inference quality, drift, lineage, usage, cost, guardrails, and operational risk.
 
 > **Watch. Understand. Act.**
 >
