@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "third-eye"
+name = "the-third-eye"
 version = "0.1.0"
 description = "AI model health and governance control plane for Databricks."
 readme = "README.md"
