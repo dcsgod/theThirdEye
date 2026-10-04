@@ -50,7 +50,13 @@ dev = [
   "twine>=6.0",
 ]
 all = [
-  "third-eye[databricks,llm,dev]",
+  "databricks-sdk>=0.50",
+  "mlflow>=2.0",
+  "pyspark>=3.5",
+  "pytest>=8.0",
+  "ruff>=0.8",
+  "build>=1.2",
+  "twine>=6.0",
 ]
 
 [project.urls]
